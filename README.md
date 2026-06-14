@@ -1,18 +1,38 @@
-# Star Battle
+# starbattle.koplugin
 
-> **Status: stub — not yet implemented**
+A Star Battle puzzle plugin for [KOReader](https://github.com/koreader/koreader).
 
-## Description
+## Screenshot
 
-Place a fixed number of stars in each row, column, and region, with no two stars adjacent (including diagonals).
+*(Screenshot to be added.)*
 
-## Files to create
+## Rules
 
-- `board.lua` — game logic, puzzle generator, serialize/load
-- `board_widget.lua` — grid rendering and tap gestures
-- `screen.lua` — full-screen layout (buttons + board)
-- `main.lua` — PluginBase entry point
+Place exactly N stars per row, column, and bold outlined region. No two stars may be adjacent — including diagonally adjacent. Tap a cell to cycle: star → empty marker → blank.
 
-## Notes
+## Features
 
-Number placement puzzle — use GridWidgetBase from game-common.
+- **1-star and 2-star variants**
+- **Multiple grid sizes** — 8×8, 10×10
+- **Non-adjacency check** — highlights conflicting stars
+- **Auto-save** — puzzle state saved and restored on next launch
+
+## Installation
+
+1. Download `starbattle.koplugin.zip` from the [latest release](../../releases/latest).
+2. Extract into the `plugins/` folder of your KOReader data directory.
+3. Restart KOReader.
+4. Open the menu → **Tools** → **Star Battle**.
+
+## Controls
+
+| Action | How |
+|--------|-----|
+| Place star / mark empty / clear | Tap cell (cycles) |
+| Check progress | Tap **Check** |
+| New puzzle | Tap **New** |
+| Show rules | Tap **Rules** |
+
+## License
+
+GPL-3.0 — see [LICENSE](LICENSE).
