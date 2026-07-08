@@ -3,5 +3,5 @@ return {
     name        = "starbattle",
     fullname    = _("Star Battle"),
     description = _("Place stars with one per row/col/region"),
-    version     = "1.0.1",
+    version     = "1.1.0",
 }
