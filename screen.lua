@@ -172,7 +172,7 @@ end
 
 function StarBattleScreen:openSizeMenu()
     local sizes = {}
-    for _, s in ipairs(StarBattleBoard.SIZES) do
+    for idx, s in ipairs(StarBattleBoard.SIZES) do
         sizes[#sizes + 1] = {
             id   = s.n,
             text = T(_("%1\xC3\x97%2 (%3\xE2\x98\x85)"), s.n, s.n, s.k),
