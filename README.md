@@ -33,6 +33,15 @@ Place exactly N stars per row, column, and bold outlined region. No two stars ma
 | New puzzle | Tap **New** |
 | Show rules | Tap **Rules** |
 
+## Known limitations
+
+Generation now requires the region layout to have exactly one valid
+star placement, verified by a bounded backtracking solver. In the rare
+case where the retry budget is exhausted before a proven-unique layout
+is found, generation falls back to the best structurally-valid layout
+found (guaranteed to have at least one solution, just not proven to be
+the only one).
+
 ## License
 
 GPL-3.0 — see [LICENSE](LICENSE).
