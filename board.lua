@@ -106,10 +106,15 @@ local function generateRegions(n)
 end
 
 -- ---------------------------------------------------------------------------
--- Star placement solver (backtracking row-by-row)
+-- Star placement solver (backtracking row-by-row). Counts up to `limit`
+-- valid placements (not just the first) so callers can verify uniqueness --
+-- the region partition itself is the entire puzzle (visible from the
+-- start, nothing hidden to dig), so like hitori/nurikabe this needs a
+-- generate-and-verify-whole-candidate approach rather than a digging
+-- retrofit. Returns (count, exhausted, first_solution_found_or_nil).
 -- ---------------------------------------------------------------------------
 
-local function solveStar(n, k, region_id)
+local function countSolutions(n, k, region_id, limit, node_budget)
     local solution = emptyGrid(n, n, 0)
     local row_count = {}
     local col_count = {}
@@ -130,24 +135,31 @@ local function solveStar(n, k, region_id)
         return false
     end
 
-    -- Place exactly k stars in each row by choosing columns
-    -- We go row by row, choosing k columns per row
-    local iter_count = { 0 }
-    local MAX_ITER = 200000
+    local solutions, nodes, exhausted = 0, 0, false
+    local first_solution = nil
 
     local function pickCols(r, start_c, placed)
-        if iter_count[1] > MAX_ITER then return false end
-        iter_count[1] = iter_count[1] + 1
+        if solutions >= limit or exhausted then return end
+        nodes = nodes + 1
+        if nodes > node_budget then exhausted = true; return end
+
         if placed == k then
             if r == n then
-                return true  -- all rows done
+                solutions = solutions + 1
+                if not first_solution then
+                    first_solution = emptyGrid(n, n, 0)
+                    for rr = 1, n do
+                        for cc = 1, n do first_solution[rr][cc] = solution[rr][cc] end
+                    end
+                end
+                return
             end
-            return pickCols(r + 1, 1, 0)
+            pickCols(r + 1, 1, 0)
+            return
         end
-        -- Need to place (k - placed) more stars in row r, columns start_c..n
         local remaining_cols = n - start_c + 1
         local needed = k - placed
-        if remaining_cols < needed then return false end
+        if remaining_cols < needed then return end
 
         for c = start_c, n do
             local reg = region_id[r][c]
@@ -157,21 +169,19 @@ local function solveStar(n, k, region_id)
                 col_count[c] = col_count[c] + 1
                 reg_count[reg] = reg_count[reg] + 1
 
-                if pickCols(r, c + 1, placed + 1) then return true end
+                pickCols(r, c + 1, placed + 1)
 
                 solution[r][c] = 0
                 row_count[r] = row_count[r] - 1
                 col_count[c] = col_count[c] - 1
                 reg_count[reg] = reg_count[reg] - 1
+                if solutions >= limit or exhausted then return end
             end
         end
-        return false
     end
 
-    if pickCols(1, 1, 0) then
-        return solution
-    end
-    return nil
+    pickCols(1, 1, 0)
+    return solutions, exhausted, first_solution
 end
 
 -- ---------------------------------------------------------------------------
@@ -201,21 +211,43 @@ function StarBattleBoard:generate()
     -- Random-region layouts are often infeasible for a given k (measured
     -- ~91% single-attempt failure at n=8/k=2), but each failed attempt is
     -- fast to prove (region generation + a capped backtracking solve), so a
-    -- much higher retry budget clears up the fallback rate cheaply (0/100 at
-    -- n=8 and n=10, avg well under a second) instead of the old cap of 10
-    -- which fell back to the trivial 6×6 layout 91% of the time at n=8.
-    local max_attempts = 500
+    -- much higher retry budget clears up the fallback rate cheaply. That
+    -- earlier fix only required *a* solution to exist, though -- never
+    -- verified there wasn't a second, different valid placement too.
+    -- Measured: only ~7% of accepted layouts were actually unique at
+    -- n=6/k=1 and n=10/k=2 (n=8/k=2 happened to be 100% unique already).
+    -- Now requires uniqueness (countSolutions == 1, not just >= 1),
+    -- falling back to the best structurally-valid-but-unproven layout
+    -- found if the budget runs out, same as nurikabe/hitori's approach --
+    -- never worse than the old "just needs to exist" behavior.
+    local max_attempts = 2000
+    local node_budget = n <= 6 and 20000 or (n <= 8 and 25000 or 30000)
+    local best_region_id, best_solution
+
     for attempt = 1, max_attempts do
         local region_id = generateRegions(n)
-        local sol = solveStar(n, k, region_id)
+        local solutions, exhausted, sol = countSolutions(n, k, region_id, 2, node_budget)
         if sol then
-            self.region_id = region_id
-            self.solution  = sol
-            self.marks     = emptyGrid(n, n, MARK_EMPTY)
-            self.won       = false
-            self.undo:clear()
-            return
+            if not best_region_id then
+                best_region_id, best_solution = region_id, sol
+            end
+            if solutions == 1 and not exhausted then
+                self.region_id = region_id
+                self.solution  = sol
+                self.marks     = emptyGrid(n, n, MARK_EMPTY)
+                self.won       = false
+                self.undo:clear()
+                return
+            end
         end
+    end
+    if best_region_id then
+        self.region_id = best_region_id
+        self.solution  = best_solution
+        self.marks     = emptyGrid(n, n, MARK_EMPTY)
+        self.won       = false
+        self.undo:clear()
+        return
     end
     -- Fallback: trivial 6x6 k=1 layout
     self.n = 6; self.k = 1
