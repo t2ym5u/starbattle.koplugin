@@ -26,7 +26,7 @@ local C_BG         = Blitbuffer.COLOR_WHITE
 local C_LINE       = Blitbuffer.COLOR_BLACK
 local C_GRID       = Blitbuffer.COLOR_GRAY_9
 local C_SELECTED   = Blitbuffer.COLOR_GRAY_D
-local C_CONFLICT   = Blitbuffer.COLOR_GRAY_A
+local C_CONFLICT   = Blitbuffer.COLOR_GRAY
 local C_DOT        = Blitbuffer.COLOR_GRAY_4
 local C_STAR       = Blitbuffer.COLOR_BLACK
 
