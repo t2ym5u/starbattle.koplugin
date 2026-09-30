@@ -1,5 +1,6 @@
 local grid_utils = require("grid_utils")
 local UndoStack  = require("undo_stack")
+local Hint       = require("hint")
 
 local emptyGrid = grid_utils.emptyGrid
 local shuffle   = grid_utils.shuffle
@@ -289,6 +290,18 @@ function StarBattleBoard:undoMove()
     return true
 end
 
+-- Like cycleCell(), but goes straight to a mark. Used by the Hint button,
+-- and undoable through the same stack as a hand-made move.
+function StarBattleBoard:setMark(r, c, mark)
+    if self.won then return false end
+    local cur = self.marks[r][c]
+    if cur == mark then return true end
+    self.undo:push{ r = r, c = c, old = cur }
+    self.marks[r][c] = mark
+    self:_checkWin()
+    return true
+end
+
 function StarBattleBoard:_checkWin()
     local n = self.n
     for r = 1, n do
@@ -379,6 +392,17 @@ end
 -- ---------------------------------------------------------------------------
 -- Serialization
 -- ---------------------------------------------------------------------------
+
+-- A dot counts as empty for the win check, so only stars decide the puzzle:
+-- cells without one read as empty and equals() compares star-ness.
+Hint.install(StarBattleBoard, {
+    getUser     = function(b, r, c) return b.marks[r][c] end,
+    getSolution = function(b, r, c) return b.solution[r][c] == 1 and MARK_STAR or MARK_EMPTY end,
+    isEmpty     = function(v) return v == MARK_EMPTY end,
+    equals      = function(u, s) return (u == MARK_STAR) == (s == MARK_STAR) end,
+    setCell     = function(b, r, c, v) return b:setMark(r, c, v) end,
+    blank       = MARK_EMPTY,
+})
 
 function StarBattleBoard:serialize()
     local n = self.n
