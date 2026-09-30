@@ -110,6 +110,7 @@ function StarBattleScreen:buildLayout()
         width   = button_width,
         buttons = {{
             { text = _("Undo"),   callback = function() self:onUndo() end },
+            { text = _("Hint"), callback = function() self:onHint() end },
             { text = _("Reveal"), callback = function() self:onReveal() end },
         }},
     }
