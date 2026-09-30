@@ -4,7 +4,7 @@ A Star Battle puzzle plugin for [KOReader](https://github.com/koreader/koreader)
 
 ## Screenshot
 
-*(Screenshot to be added.)*
+![Screenshot](images/starbattle.png)
 
 ## Rules
 
