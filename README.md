@@ -16,6 +16,7 @@ Place exactly N stars per row, column, and bold outlined region. No two stars ma
 - **Multiple grid sizes** — 8×8, 10×10
 - **Non-adjacency check** — highlights conflicting stars
 - **Auto-save** — puzzle state saved and restored on next launch
+- **Hint** — two taps: the first says which cell is about to give, the second acts on it. A cell that contradicts the solution is always reported before a fresh one is revealed
 
 ## Installation
 
