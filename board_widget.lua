@@ -8,6 +8,8 @@ local function lrequire(name)
 end
 
 local Blitbuffer = require("ffi/blitbuffer")
+local Device     = require("device")
+local Font       = require("ui/font")
 local Geom       = require("ui/geometry")
 local RenderText = require("ui/rendertext")
 local Size       = require("ui/size")
@@ -17,6 +19,10 @@ local GridWidgetBase = gwb.GridWidgetBase
 local drawLine       = gwb.drawLine
 
 local StarBattleBoard = lrequire("board")
+
+local Screen = Device.screen
+
+local STAR = "\xE2\x98\x85"   -- U+2605 BLACK STAR
 
 -- ---------------------------------------------------------------------------
 -- Colours
@@ -44,6 +50,25 @@ function StarBattleBoardWidget:init()
     self.cols = n
     self.rows = n
     GridWidgetBase.init(self)
+    self:_initStarFace()
+end
+
+-- The star glyph is wider than the "8" GridWidgetBase fits its font to, so
+-- size its own face: the largest that fits the cell's inner box.
+function StarBattleBoardWidget:_initStarFace()
+    local pad   = self.number_padding or 2
+    local inner = math.max(1, math.floor(math.min(self.cell_w, self.cell_h) - 2 * pad))
+    local lo, hi, best = 6, 200, 6
+    while lo <= hi do
+        local mid = math.floor((lo + hi) / 2)
+        local m   = RenderText:sizeUtf8Text(0, Screen:getWidth(), Font:getFace("cfont", mid), STAR, true, false)
+        if m.x <= inner and (m.y_top + m.y_bottom) <= inner then
+            best, lo = mid, mid + 1
+        else
+            hi = mid - 1
+        end
+    end
+    self.star_face = Font:getFace("cfont", best)
 end
 
 function StarBattleBoardWidget:onCellTap(row, col)
@@ -92,8 +117,11 @@ function StarBattleBoardWidget:paintTo(bb, x, y)
 
     for i = 0, n do
         local lw = (i == 0 or i == n) and thick or thin
-        drawLine(bb, x + math.floor(i * cell), y, lw, self.dimen.h, C_LINE)
-        drawLine(bb, x, y + math.floor(i * cell), self.dimen.w, lw, C_LINE)
+        -- The closing line sits inside the widget: drawn at i * cell it
+        -- would spill lw - 1 pixels past the right and bottom edges.
+        local off = (i == n) and (self.dimen.w - lw) or math.floor(i * cell)
+        drawLine(bb, x + off, y, lw, self.dimen.h, C_LINE)
+        drawLine(bb, x, y + off, self.dimen.w, lw, C_LINE)
     end
 
     -- Thick region borders
@@ -116,10 +144,9 @@ function StarBattleBoardWidget:paintTo(bb, x, y)
     end
 
     -- Cell content
-    local pad    = self.number_padding or 2
-    local inner  = math.max(1, math.floor(cell - 2 * pad))
-    local star_face = self.number_face
-    local dot_face  = self.note_face
+    local pad   = self.number_padding or 2
+    local inner = math.max(1, math.floor(cell - 2 * pad))
+    local star_face = self.star_face
 
     for r = 1, n do
         for c = 1, n do
@@ -128,19 +155,16 @@ function StarBattleBoardWidget:paintTo(bb, x, y)
             local mark = board.marks[r][c]
 
             if mark == StarBattleBoard.MARK_STAR then
-                -- Draw star as "*" centered in cell
-                local text = "*"
-                local m    = RenderText:sizeUtf8Text(0, inner, star_face, text, true, false)
+                -- Centre the star's ink on the cell centre. (An "*" used to
+                -- stand in for it: a small glyph that sat near the top.)
+                local m    = RenderText:sizeUtf8Text(0, Screen:getWidth(), star_face, STAR, true, false)
                 local bx   = cx + pad + math.floor((inner - m.x) / 2)
                 local by   = cy + pad + math.floor((inner + m.y_top - m.y_bottom) / 2)
-                RenderText:renderUtf8Text(bb, bx, by, star_face, text, true, false, C_STAR)
+                RenderText:renderUtf8Text(bb, bx, by, star_face, STAR, true, false, C_STAR)
             elseif mark == StarBattleBoard.MARK_DOT then
-                -- Draw dot as "." centered in cell
-                local text = "."
-                local m    = RenderText:sizeUtf8Text(0, inner, dot_face, text, true, false)
-                local bx   = cx + pad + math.floor((inner - m.x) / 2)
-                local by   = cy + pad + math.floor((inner + m.y_top - m.y_bottom) / 2)
-                RenderText:renderUtf8Text(bb, bx, by, dot_face, text, true, false, C_DOT)
+                -- A painted disc: the "." glyph was a few pixels wide.
+                bb:paintCircle(cx + math.floor(cell / 2), cy + math.floor(cell / 2),
+                    math.max(2, math.floor(cell * 0.09)), C_DOT)
             end
         end
     end

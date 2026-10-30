@@ -7,8 +7,6 @@ local function lrequire(name)
     return package.loaded[key]
 end
 
-local ButtonTable     = require("ui/widget/buttontable")
-local Device          = require("device")
 local FrameContainer  = require("ui/widget/container/framecontainer")
 local HorizontalGroup = require("ui/widget/horizontalgroup")
 local HorizontalSpan  = require("ui/widget/horizontalspan")
@@ -23,8 +21,6 @@ local ScreenBase            = require("screen_base")
 local MenuHelper            = require("menu_helper")
 local StarBattleBoard       = lrequire("board")
 local StarBattleBoardWidget = lrequire("board_widget")
-
-local DeviceScreen = Device.screen
 
 local GAME_RULES_EN = _([[
 Star Battle — Rules
@@ -75,27 +71,7 @@ function StarBattleScreen:_kForN(n)
 end
 
 function StarBattleScreen:buildLayout()
-    local sw           = DeviceScreen:getWidth()
     local is_landscape = self:isLandscape()
-
-    self.board_widget = StarBattleBoardWidget:new{
-        board        = self.board,
-        onCellAction = function(r, c) self:onCellAction(r, c) end,
-    }
-
-    local board_frame = FrameContainer:new{
-        padding = Size.padding.large,
-        margin  = Size.margin.default,
-        self.board_widget,
-    }
-
-    local board_frame_size  = self.board_widget.size + (Size.padding.large + Size.margin.default) * 2
-    local right_panel_width = sw - board_frame_size - Size.span.horizontal_default
-    local button_width = is_landscape
-        and math.max(right_panel_width - Size.span.horizontal_default, 100)
-        or  math.floor(sw * 0.9)
-
-    self.status_text:setMaxWidth(is_landscape and button_width or board_frame_size)
 
     local title_bar = self:buildTitleBar(_("Star Battle"), function()
         return {
@@ -105,38 +81,47 @@ function StarBattleScreen:buildLayout()
         }
     end)
 
-    local bottom_buttons = ButtonTable:new{
-        shrink_unneeded_width = true,
-        width   = button_width,
-        buttons = {{
-            { text = _("Undo"),   callback = function() self:onUndo() end },
-            { text = _("Hint"), callback = function() self:onHint() end },
-            { text = _("Reveal"), callback = function() self:onReveal() end },
-        }},
+    -- Controls first: the board is sized from whatever room they leave.
+    self.status_text:setMaxWidth(self:getControlsWidth())
+    local action_bar = self:buildActionBar({
+        { text = _("Undo"),   callback = function() self:onUndo() end },
+        { text = _("Hint"), callback = function() self:onHint() end },
+        { text = _("Reveal"), callback = function() self:onReveal() end },
+    })
+    local controls = VerticalGroup:new{
+        align = "center",
+        self.status_text,
+        VerticalSpan:new{ width = Size.span.vertical_large },
+        action_bar,
+    }
+
+    -- The widget draws its own thick outer border, so the frame only pads.
+    local frame_pad   = Size.padding.large
+    local frame_extra = 2 * frame_pad
+    local budget_w, budget_h = self:getBoardBudget(title_bar, controls)
+    self.board_widget = StarBattleBoardWidget:new{
+        board        = self.board,
+        max_size     = math.min(budget_w, budget_h) - frame_extra,
+        onCellAction = function(r, c) self:onCellAction(r, c) end,
+    }
+    local board_frame = FrameContainer:new{
+        padding    = frame_pad,
+        margin     = 0,
+        bordersize = 0,
+        self.board_widget,
     }
 
     if is_landscape then
-        local right_panel = VerticalGroup:new{
-            align = "center",
-            self.status_text,
-            VerticalSpan:new{ width = Size.span.vertical_large },
-            bottom_buttons,
-        }
         local content = HorizontalGroup:new{
-            align  = "center",
+            align = "center",
             board_frame,
-            HorizontalSpan:new{ width = Size.span.horizontal_default },
-            right_panel,
+            HorizontalSpan:new{ width = self:getGutter() },
+            controls,
         }
         self:buildLandscapeLayout(title_bar, content)
     else
-        local content = VerticalGroup:new{
-            align = "center",
-            board_frame,
-            VerticalSpan:new{ width = Size.span.vertical_large },
-            self.status_text,
-        }
-        self:buildPortraitLayout(title_bar, content, bottom_buttons)
+        self:buildPortraitLayout(title_bar, board_frame,
+            VerticalGroup:new{ align = "center", controls, VerticalSpan:new{ width = self:getGutter() } })
     end
     self:updateStatus()
 end
@@ -146,6 +131,7 @@ function StarBattleScreen:onCellAction(r, c)
     self.board_widget:refresh()
     self:updateStatus()
     self.plugin:saveState(self.board:serialize())
+    self:refreshActionBar()
 end
 
 function StarBattleScreen:onUndo()
@@ -153,6 +139,7 @@ function StarBattleScreen:onUndo()
         self.board_widget:refresh()
         self:updateStatus()
         self.plugin:saveState(self.board:serialize())
+        self:refreshActionBar()
     end
 end
 
@@ -161,6 +148,17 @@ function StarBattleScreen:onReveal()
     self.board_widget:refresh()
     self:updateStatus(_("Solution revealed."))
     self.plugin:saveState(self.board:serialize())
+    self:refreshActionBar()
+end
+
+function StarBattleScreen:isRoundOver()
+    return self.board.won
+end
+
+-- A hint can place the last cell, so the round may end here.
+function StarBattleScreen:onHint()
+    ScreenBase.onHint(self)
+    self:refreshActionBar()
 end
 
 function StarBattleScreen:onNewGame()
@@ -181,7 +179,7 @@ function StarBattleScreen:openSizeMenu()
         }
     end
     MenuHelper.openSizeMenu{
-        title     = _("Select grid size"),
+        title     = _("Select size"),
         sizes     = sizes,
         current   = self.plugin:getSetting("grid_n", StarBattleBoard.DEFAULT_N),
         parent    = self,
@@ -204,8 +202,8 @@ function StarBattleScreen:updateStatus(msg)
         local placed = self.board:countStars()
         local total  = self.board:totalStars()
         local n, k   = self.board.n, self.board.k
-        status = T(_("%1\xC3\x97%2 \xC2\xB7 %3\xE2\x98\x85/row \xC2\xB7 Stars: %4/%5"),
-            n, n, k, placed, total)
+        status = self:joinStatus(
+            T("%1×%1", n), T(_("%1\xE2\x98\x85/row"), k), T(_("Stars: %1/%2"), placed, total))
     end
     ScreenBase.updateStatus(self, status)
 end
