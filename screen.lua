@@ -76,6 +76,7 @@ function StarBattleScreen:buildLayout()
     local title_bar = self:buildTitleBar(_("Star Battle"), function()
         return {
             { text = _("New game"),            callback = function() self:onNewGame() end },
+            self:makeDailyButtonConfig(),
             { text = self:getSizeButtonText(), callback = function() self:openSizeMenu() end },
             self:makeRulesButtonConfig(GAME_RULES_EN, GAME_RULES_FR),
         }
