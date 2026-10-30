@@ -31,7 +31,7 @@ Place exactly N stars per row, column, and bold outlined region. No two stars ma
 |--------|-----|
 | Place star / mark empty / clear | Tap cell (cycles) |
 | Check progress | Tap **Check** |
-| New puzzle | Tap **New** |
+| New puzzle | Tap **New game** |
 | Show rules | Tap **Rules** |
 
 ## Known limitations

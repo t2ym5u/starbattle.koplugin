@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.0] - 2026-10-30
+
+### Changed
+- Redesigned play screen: the board is larger, filling the room the controls
+  leave, with a full-width action bar under the status line and a single
+  frame around the board.
+- Stars are drawn as a real ★ sized to the cell (an "*" stood in for it: a
+  small glyph that sat near the top), and empty marks as a disc instead of a
+  tiny ".".
+- The status line reads "8×8 · 1★/row · Stars: 3/8" and wraps in landscape
+  instead of being cut off.
+- Once the puzzle is solved (or revealed), the action bar shows "New game" in
+  place of Undo/Hint/Reveal, so the next round no longer needs the menu.
+
+### Fixed
+- The grid's right and bottom border lines were drawn past the board's edge.
+- Using a hint wiped the saved game; it is now kept. When a hint places the
+  last star, the status shows the win message.
+
 ## [1.2.2] - 2026-10-07
 
 ### Fixed
