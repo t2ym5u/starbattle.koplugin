@@ -152,8 +152,41 @@ local function rowCombos(n, k)
     return out
 end
 
-local function countSolutions(n, k, region_id, limit, node_budget)
+-- compat[j]: the combos that may follow combo j in the next row (no star
+-- touching one of j's, diagonals included); compat[0] = all of them.
+local compat_cache = {}
+local function rowCompat(n, k)
+    local key = n * 100 + k
+    if compat_cache[key] then return compat_cache[key] end
     local combos = rowCombos(n, k)
+    local compat = { [0] = {} }
+    for i = 1, #combos do compat[0][i] = i end
+    for j, a in ipairs(combos) do
+        local list = {}
+        for i, b in ipairs(combos) do
+            local ok = true
+            for x = 1, k do
+                for y = 1, k do
+                    if math.abs(a[x] - b[y]) <= 1 then ok = false end
+                end
+            end
+            if ok then list[#list + 1] = i end
+        end
+        compat[j] = list
+    end
+    compat_cache[key] = compat
+    return compat
+end
+
+-- per-row scratch lists of countSolutions (never nested), per size
+local scratch_cache = {}
+
+-- dead (optional): the dead ends found so far, per row (see below), to
+-- carry over to a recount of a layout changed only in rows up to some row
+-- (tweakUntilUnique).
+local function countSolutions(n, k, region_id, limit, node_budget, dead)
+    local combos = rowCombos(n, k)
+    local compat = rowCompat(n, k)
 
     -- suffix[g][r]: most stars region g can still get in rows r..n.
     local suffix = {}
@@ -182,75 +215,186 @@ local function countSolutions(n, k, region_id, limit, node_budget)
     local solutions, nodes, exhausted = 0, 0, false
     local found = {}
 
-    local function search(r)
-        if solutions >= limit or exhausted then return end
+    -- Depth-first, a row at a time, combos in order, written as a loop
+    -- with its own stack (LuaJIT runs that much faster than recursion).
+    --
+    -- Two lookaheads are worked out once per row before its combos are
+    -- tried: needy (a region that rows r+1..n can't fill on their own, by
+    -- suffix, needs stars in this row) and must (a column that one star
+    -- every other row can't fill otherwise needs a star in this row; one
+    -- that would be short even so rules out the row). Only combos clear of
+    -- the previous row's stars are looked at (compat).
+    --
+    -- Dead ends already explored are skipped: what is left to place below
+    -- row r only depends on r, the stars per column and per region so far,
+    -- and row r's combo, so a state whose rows below held no solution
+    -- holds none when the search reaches it again by another path.
+    -- Solutions come in the same order, only sooner. The key packs it all
+    -- into one integer (counts in base 3, as k <= 2), one table per row.
+    -- Whether a state is a dead end only depends on the layout of the rows
+    -- below it, so the tables of rows at or below the last changed row
+    -- stay good for a changed layout.
+    local scratch = scratch_cache[n]
+    if not scratch then
+        scratch = { {}, {}, {} }
+        for r = 1, n do scratch[1][r], scratch[2][r], scratch[3][r] = {}, {}, {} end
+        scratch_cache[n] = scratch
+    end
+    local needy_gs, needy_ds, must_cs = scratch[1], scratch[2], scratch[3]
+    local nneedys, nmusts = {}, {}
+    -- (without a dead table, none is kept: on the small boards the
+    -- bookkeeping costs more than it saves)
+    local pow3 = { [1] = 1 }
+    for i = 2, n do pow3[i] = pow3[i - 1] * 3 end
+    local col_key, reg_key = 0, 0
+    local ncombo = #combos + 1
+    local chosen = { [0] = 0 }   -- chosen[r]: row r's combo (0: none yet)
+    local pos = {}               -- pos[r]: next index into row r's list
+    local keys, before = {}, {} -- per row: its state key, solutions then
+
+    -- Entering row r: count the node and work out its lookaheads.
+    -- False when the row can't take any combo.
+    local function enter(r)
         nodes = nodes + 1
-        if nodes > node_budget then exhausted = true; return end
-        if r > n then
-            -- Every column and region has k stars: the lookahead below
-            -- leaves no room for less once the last row is placed.
-            solutions = solutions + 1
-            if solutions <= 2 then
-                local sol = emptyGrid(n, n, 0)
-                for rr = 1, n do
-                    for cc = 1, n do
-                        if star[rr][cc + 1] then sol[rr][cc] = 1 end
-                    end
-                end
-                found[solutions] = sol
-            end
-            return
-        end
-        local prev, row, regs = star[r - 1], star[r], region_id[r]
+        if nodes > node_budget then exhausted = true; return false end
         local rows_left = n - r
-        for _, cb in ipairs(combos) do
+        local half_dn, half_up = math.floor(rows_left / 2), math.ceil(rows_left / 2)
+        local needy_g, needy_d, must_c = needy_gs[r], needy_ds[r], must_cs[r]
+        local nneedy, nmust = 0, 0
+        for g = 1, n do
+            local d = k - reg_count[g] - suffix[g][r + 1]
+            if d > 0 then
+                if d > k then return false end
+                nneedy = nneedy + 1
+                needy_g[nneedy], needy_d[nneedy] = g, d
+            end
+        end
+        for c = 1, n do
+            local need = k - col_count[c]
+            if need > half_up then
+                if need - 1 > half_dn then return false end
+                nmust = nmust + 1
+                must_c[nmust] = c
+            end
+        end
+        nneedys[r], nmusts[r] = nneedy, nmust
+        pos[r] = 1
+        return true
+    end
+
+    -- Takes row r's combo back off the board.
+    local function lift(r)
+        local cb, regs, row = combos[chosen[r]], region_id[r], star[r]
+        for i = 1, k do
+            local c = cb[i]
+            reg_count[regs[c]] = reg_count[regs[c]] - 1
+            col_count[c] = col_count[c] - 1
+            row[c + 1] = false
+            col_key = col_key - pow3[c]
+            reg_key = reg_key - pow3[regs[c]]
+        end
+        chosen[r] = 0
+    end
+
+    local r = 1
+    if not enter(1) then r = 0 end
+    while r >= 1 do
+        -- next combo of row r that passes every check
+        local list = compat[chosen[r - 1]]
+        local regs = region_id[r]
+        local needy_g, needy_d, must_c = needy_gs[r], needy_ds[r], must_cs[r]
+        local nneedy, nmust = nneedys[r], nmusts[r]
+        local p, pick = pos[r], nil
+        while p <= #list do
+            local ci = list[p]
+            p = p + 1
+            local cb = combos[ci]
             local ok = true
             for i = 1, k do
                 local c = cb[i]
-                if col_count[c] >= k or prev[c] or prev[c + 1] or prev[c + 2] then
-                    ok = false
-                    break
+                if col_count[c] >= k or reg_count[regs[c]] >= k then ok = false; break end
+            end
+            if ok and k == 2 and regs[cb[1]] == regs[cb[2]] and reg_count[regs[cb[1]]] > 0 then
+                ok = false   -- both stars in one region that already has one
+            end
+            if ok then
+                for j = 1, nmust do
+                    local c, hit = must_c[j], false
+                    for i = 1, k do
+                        if cb[i] == c then hit = true; break end
+                    end
+                    if not hit then ok = false; break end
                 end
             end
             if ok then
-                for i = 1, k do
-                    local c = cb[i]
-                    reg_count[regs[c]] = reg_count[regs[c]] + 1
-                    col_count[c] = col_count[c] + 1
-                    row[c + 1] = true
-                end
-                for i = 1, k do
-                    if reg_count[regs[cb[i]]] > k then ok = false; break end
-                end
-                if ok then
-                    for g = 1, n do
-                        if k - reg_count[g] > suffix[g][r + 1] then ok = false; break end
+                for j = 1, nneedy do
+                    local g, got = needy_g[j], 0
+                    for i = 1, k do
+                        if regs[cb[i]] == g then got = got + 1 end
                     end
+                    if got < needy_d[j] then ok = false; break end
                 end
-                if ok then
-                    for c = 1, n do
-                        local need = k - col_count[c]
-                        if need > 0 then
-                            -- one star every other row; not right below one
-                            local avail = row[c + 1] and math.floor(rows_left / 2)
-                                or math.ceil(rows_left / 2)
-                            if need > avail then ok = false; break end
+            end
+            if ok and dead then
+                local ck, rk = col_key, reg_key
+                for i = 1, k do
+                    ck = ck + pow3[cb[i]]
+                    rk = rk + pow3[regs[cb[i]]]
+                end
+                local key = (ck * pow3[n] * 3 + rk) * ncombo + ci
+                if not dead[r][key] then pick = ci; keys[r] = key; break end
+            elseif ok then
+                pick = ci
+                break
+            end
+        end
+        pos[r] = p
+        if pick then
+            local cb, row = combos[pick], star[r]
+            for i = 1, k do
+                local c = cb[i]
+                reg_count[regs[c]] = reg_count[regs[c]] + 1
+                col_count[c] = col_count[c] + 1
+                row[c + 1] = true
+                col_key = col_key + pow3[c]
+                reg_key = reg_key + pow3[regs[c]]
+            end
+            chosen[r] = pick
+            before[r] = solutions
+            if r == n then
+                -- A full board. Every column and region has k stars: the
+                -- lookaheads leave no room for less once the last row is
+                -- placed.
+                nodes = nodes + 1
+                if nodes > node_budget then exhausted = true; break end
+                solutions = solutions + 1
+                if solutions <= 2 then
+                    local sol = emptyGrid(n, n, 0)
+                    for rr = 1, n do
+                        for cc = 1, n do
+                            if star[rr][cc + 1] then sol[rr][cc] = 1 end
                         end
                     end
+                    found[solutions] = sol
                 end
-                if ok then search(r + 1) end
-                for i = 1, k do
-                    local c = cb[i]
-                    reg_count[regs[c]] = reg_count[regs[c]] - 1
-                    col_count[c] = col_count[c] - 1
-                    row[c + 1] = false
-                end
-                if solutions >= limit or exhausted then return end
+                if solutions >= limit then break end
+                lift(r)
+            elseif enter(r + 1) then
+                r = r + 1
+            else
+                if exhausted then break end
+                if dead then dead[r][keys[r]] = true end
+                lift(r)
+            end
+        else
+            -- row r is done: back to row r-1's next combo
+            r = r - 1
+            if r >= 1 then
+                if dead and solutions == before[r] then dead[r][keys[r]] = true end
+                lift(r)
             end
         end
     end
-
-    search(1)
     return solutions, exhausted, found[1], found[2]
 end
 
@@ -364,7 +508,8 @@ end
 -- or shows the next rival. Returns true once S is the only solution.
 local MAX_REGION_TWEAKS = 40
 
-local function tweakUntilUnique(n, k, region_id, target, rival, node_budget)
+-- dead: countSolutions' dead ends for this layout, kept from count to count.
+local function tweakUntilUnique(n, k, region_id, target, rival, node_budget, dead)
     for step = 1, MAX_REGION_TWEAKS do
         local xs = {}
         for r = 1, n do
@@ -377,13 +522,19 @@ local function tweakUntilUnique(n, k, region_id, target, rival, node_budget)
         for _, x in ipairs(xs) do
             local cells, to = regionMove(region_id, n, x, target)
             if cells then
-                for _, cell in ipairs(cells) do region_id[cell[1]][cell[2]] = to end
+                local last = 0
+                for _, cell in ipairs(cells) do
+                    region_id[cell[1]][cell[2]] = to
+                    if cell[1] > last then last = cell[1] end
+                end
+                -- dead ends above the last changed row may not be any more
+                for r = 1, last - 1 do dead[r] = {} end
                 moved = true
                 break
             end
         end
         if not moved then return false, step - 1 end
-        local solutions, exhausted, first, second = countSolutions(n, k, region_id, 2, node_budget)
+        local solutions, exhausted, first, second = countSolutions(n, k, region_id, 2, node_budget, dead)
         if exhausted or solutions == 0 then return false, step end
         if solutions == 1 then return true, step end
         rival = second
@@ -425,14 +576,19 @@ function StarBattleBoard:generate(on_progress)
         if tweak and counts >= MAX_COUNTS then break end
         if on_progress then on_progress(counts / (counts + 30)) end
         local region_id = generateRegions(n)
-        local solutions, exhausted, sol, rival = countSolutions(n, k, region_id, 2, node_budget)
+        local dead
+        if tweak then
+            dead = {}
+            for r = 1, n do dead[r] = {} end
+        end
+        local solutions, exhausted, sol, rival = countSolutions(n, k, region_id, 2, node_budget, dead)
         counts = counts + 1
         local unique = not exhausted and solutions == 1
         if sol and tweak and not unique and not exhausted then
             -- Tweaking keeps sol a solution, so the layout stays a valid
             -- (if unproven) fallback whatever happens.
             local used
-            unique, used = tweakUntilUnique(n, k, region_id, sol, rival, node_budget)
+            unique, used = tweakUntilUnique(n, k, region_id, sol, rival, node_budget, dead)
             counts = counts + used
         end
         if sol then
