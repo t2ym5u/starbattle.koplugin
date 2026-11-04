@@ -77,6 +77,163 @@ describe("StarBattleBoard", function()
         end)
     end)
 
+    -- 1.5.0: a row-at-a-time solver with column/region lookahead replaced
+    -- the cell-by-cell one, and 10x10 layouts with rivals get their regions
+    -- tweaked (10x10 took 3-7 s on a desktop). Keep the old solver here and
+    -- check the new one agrees with it, solutions included, and that every
+    -- size still yields uniquely solvable puzzles, quickly.
+    describe("solver and generator", function()
+        local function emptyGrid(n, m, v)
+            local g = {}
+            for r = 1, n do
+                g[r] = {}
+                for c = 1, m do g[r][c] = v end
+            end
+            return g
+        end
+        local function inBounds(r, c, n)
+            return r >= 1 and r <= n and c >= 1 and c <= n
+        end
+
+        -- The pre-1.5.0 solver, verbatim.
+        local function oldCountSolutions(n, k, region_id, limit, node_budget)
+            local solution = emptyGrid(n, n, 0)
+            local row_count = {}
+            local col_count = {}
+            local reg_count = {}
+            for i = 1, n do row_count[i] = 0; col_count[i] = 0; reg_count[i] = 0 end
+
+            local function isAdjacent(r, c)
+                for dr = -1, 1 do
+                    for dc = -1, 1 do
+                        if not (dr == 0 and dc == 0) then
+                            local nr, nc = r + dr, c + dc
+                            if inBounds(nr, nc, n) and solution[nr][nc] == 1 then
+                                return true
+                            end
+                        end
+                    end
+                end
+                return false
+            end
+
+            local solutions, nodes, exhausted = 0, 0, false
+            local first_solution = nil
+
+            local function pickCols(r, start_c, placed)
+                if solutions >= limit or exhausted then return end
+                nodes = nodes + 1
+                if nodes > node_budget then exhausted = true; return end
+
+                if placed == k then
+                    if r == n then
+                        solutions = solutions + 1
+                        if not first_solution then
+                            first_solution = emptyGrid(n, n, 0)
+                            for rr = 1, n do
+                                for cc = 1, n do first_solution[rr][cc] = solution[rr][cc] end
+                            end
+                        end
+                        return
+                    end
+                    pickCols(r + 1, 1, 0)
+                    return
+                end
+                local remaining_cols = n - start_c + 1
+                local needed = k - placed
+                if remaining_cols < needed then return end
+
+                for c = start_c, n do
+                    local reg = region_id[r][c]
+                    if col_count[c] < k and reg_count[reg] < k and not isAdjacent(r, c) then
+                        solution[r][c] = 1
+                        row_count[r] = row_count[r] + 1
+                        col_count[c] = col_count[c] + 1
+                        reg_count[reg] = reg_count[reg] + 1
+
+                        pickCols(r, c + 1, placed + 1)
+
+                        solution[r][c] = 0
+                        row_count[r] = row_count[r] - 1
+                        col_count[c] = col_count[c] - 1
+                        reg_count[reg] = reg_count[reg] - 1
+                        if solutions >= limit or exhausted then return end
+                    end
+                end
+            end
+
+            pickCols(1, 1, 0)
+            return solutions, exhausted, first_solution
+        end
+        it("counts the same solutions as the old solver on random layouts", function()
+            for _, size in ipairs({ {6, 1}, {8, 2}, {10, 2} }) do
+                local n, k = size[1], size[2]
+                for seed = 1, (n == 10 and 12 or 40) do
+                    math.randomseed(seed * 104729 + n)
+                    local reg = Board._generateRegions(n)
+                    local so, eo, fo = oldCountSolutions(n, k, reg, 2, 3000000)
+                    local sn, en, fn = Board._countSolutions(n, k, reg, 2, 3000000)
+                    assert.is_false(eo)
+                    assert.is_false(en)
+                    assert.are.equal(so, sn)
+                    if so > 0 then assert.are.same(fo, fn) end
+                end
+            end
+        end)
+
+        it("builds uniquely solvable puzzles quickly at every size", function()
+            for _, size in ipairs(Board.SIZES) do
+                local worst = 0
+                for seed = 1, 12 do
+                    math.randomseed(seed * 7919 + size.n)
+                    local t0 = os.clock()
+                    local b = Board:new{ n = size.n, k = size.k }
+                    worst = math.max(worst, os.clock() - t0)
+                    local count, exhausted, sol = Board._countSolutions(size.n, size.k, b.region_id, 2, 3000000)
+                    assert.is_false(exhausted)
+                    assert.are.equal(1, count, ("n=%d seed %d not unique"):format(size.n, seed))
+                    assert.are.same(b.solution, sol)
+                    -- regions stay connected, n of them
+                    local seen_regions = {}
+                    for r = 1, size.n do
+                        for c = 1, size.n do seen_regions[b.region_id[r][c]] = true end
+                    end
+                    local count_regions = 0
+                    for g in pairs(seen_regions) do
+                        count_regions = count_regions + 1
+                        local start
+                        local cells = 0
+                        for r = 1, size.n do
+                            for c = 1, size.n do
+                                if b.region_id[r][c] == g then
+                                    cells = cells + 1
+                                    start = start or { r, c }
+                                end
+                            end
+                        end
+                        local seen, stack, reached = { [start[1] * 100 + start[2]] = true }, { start }, 1
+                        while #stack > 0 do
+                            local cur = table.remove(stack)
+                            for _, d in ipairs({ {-1,0},{1,0},{0,-1},{0,1} }) do
+                                local nr, nc = cur[1] + d[1], cur[2] + d[2]
+                                if inBounds(nr, nc, size.n) and b.region_id[nr][nc] == g
+                                        and not seen[nr * 100 + nc] then
+                                    seen[nr * 100 + nc] = true
+                                    reached = reached + 1
+                                    stack[#stack + 1] = { nr, nc }
+                                end
+                            end
+                        end
+                        assert.are.equal(cells, reached, ("region %d split"):format(g))
+                    end
+                    assert.are.equal(size.n, count_regions)
+                end
+                -- generous: well under 0.5 s on a desktop
+                assert.is_true(worst < 3.0, ("n=%d took %.2f s"):format(size.n, worst))
+            end
+        end)
+    end)
+
     describe("cycleCell / getConflicts / reveal", function()
         it("cycles a cell EMPTY→STAR→DOT→EMPTY", function()
             local b = newBoard(8, 2)
