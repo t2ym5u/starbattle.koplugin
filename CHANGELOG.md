@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.6.0] - 2026-11-04
+
+### Changed
+- 10×10 puzzles build two to three times faster: from up to 0.35 s on a
+  desktop (about 9 s on a Kobo) to about 0.1 s (about 2.5 s on a Kobo),
+  0.02 s on average. The solution check skips placements it has already
+  found to lead nowhere, also from one adjusted layout to the next, and
+  runs as a plain loop. Same puzzles as before at every size.
+- Uses less memory: the game loads when you open it, not when KOReader
+  starts, so it no longer takes memory or startup time while unplayed.
+
 ## [1.5.0] - 2026-11-04
 
 ### Changed

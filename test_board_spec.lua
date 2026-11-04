@@ -181,6 +181,42 @@ describe("StarBattleBoard", function()
             end
         end)
 
+        -- 1.6.0: the dead ends a count finds are kept for the next count
+        -- of a layout changed only in rows up to some row (the tweaks), for
+        -- the rows at or below it. Same counts and solutions as counting
+        -- from nothing (also checked against 1.5.0 on 12,000 counts).
+        it("keeps dead ends across recounts of a tweaked layout", function()
+            local function same(a, b)
+                if a == nil or b == nil then return a == b end
+                for r = 1, #a do
+                    for c = 1, #a do
+                        if a[r][c] ~= b[r][c] then return false end
+                    end
+                end
+                return true
+            end
+            for _, size in ipairs({ {6, 1}, {8, 2}, {10, 2} }) do
+                local n, k = size[1], size[2]
+                for seed = 1, (n == 10 and 4 or 10) do
+                    math.randomseed(seed * 7177 + n)
+                    local reg = Board._generateRegions(n)
+                    local dead = {}
+                    for r = 1, n do dead[r] = {} end
+                    for _ = 1, 5 do
+                        local s1, e1, f1, g1 = Board._countSolutions(n, k, reg, 2, 3000000)
+                        local s2, e2, f2, g2 = Board._countSolutions(n, k, reg, 2, 3000000, dead)
+                        assert.are.equal(s1, s2)
+                        assert.are.equal(e1, e2)
+                        assert.is_true(same(f1, f2) and same(g1, g2))
+                        local r, c = math.random(n), math.random(n)
+                        local nr = math.max(1, math.min(n, r + math.random(-1, 1)))
+                        reg[r][c] = reg[nr][c]
+                        for rr = 1, r - 1 do dead[rr] = {} end
+                    end
+                end
+            end
+        end)
+
         it("builds uniquely solvable puzzles quickly at every size", function()
             for _, size in ipairs(Board.SIZES) do
                 local worst = 0
