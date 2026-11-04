@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.5.0] - 2026-11-04
+
+### Changed
+- Much faster 10×10 puzzles: up to 7 s on a desktop (about 3 minutes on a
+  Kobo) down to under 0.1 s (about 2 s on a Kobo). The solution check now
+  places a whole row at a time and drops a row as soon as some column or
+  region can no longer get its stars; a 10×10 layout with several
+  solutions has a few cells moved to a neighbouring region until only one
+  is left, instead of being thrown away. 6×6 and 8×8 puzzles are unchanged;
+  10×10 ones are new layouts, and every one of them now has exactly one
+  solution (about 1 in 10 used not to be proven).
+- Opening the game no longer builds a puzzle it then throws away (it was
+  generated even when a saved game was about to be restored).
+- A "Generating puzzle…" progress bar shows when a puzzle takes more than a
+  moment. Needs game-common 1.12.0.
+
 ## [1.4.3] - 2026-11-03
 
 ### Changed

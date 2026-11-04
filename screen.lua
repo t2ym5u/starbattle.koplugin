@@ -19,6 +19,7 @@ local T               = require("ffi/util").template
 
 local ScreenBase            = require("screen_base")
 local MenuHelper            = require("menu_helper")
+local GenProgress           = require("gen_progress")
 local StarBattleBoard       = lrequire("board")
 local StarBattleBoardWidget = lrequire("board_widget")
 
@@ -52,9 +53,9 @@ function StarBattleScreen:init()
     local state = self.plugin:loadState()
     local n     = self.plugin:getSetting("grid_n", StarBattleBoard.DEFAULT_N)
     local k     = self:_kForN(n)
-    self.board  = StarBattleBoard:new{ n = n, k = k }
+    self.board  = StarBattleBoard:new{ n = n, k = k, empty = true }
     if not self.board:load(state) then
-        -- fresh game already generated in new()
+        GenProgress.run(function(on_progress) self.board:generate(on_progress) end)
     end
     ScreenBase.init(self)
 end
@@ -165,7 +166,8 @@ end
 function StarBattleScreen:onNewGame()
     local n = self.plugin:getSetting("grid_n", StarBattleBoard.DEFAULT_N)
     local k = self:_kForN(n)
-    self.board = StarBattleBoard:new{ n = n, k = k }
+    self.board = StarBattleBoard:new{ n = n, k = k, empty = true }
+    GenProgress.run(function(on_progress) self.board:generate(on_progress) end)
     self.plugin:saveState(self.board:serialize())
     self:buildLayout()
     UIManager:setDirty(self, function() return "ui", self.dimen end)
