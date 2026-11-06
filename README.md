@@ -13,7 +13,8 @@ Place exactly N stars per row, column, and bold outlined region. No two stars ma
 ## Features
 
 - **1-star and 2-star variants**
-- **Multiple grid sizes** — 8×8, 10×10
+- **Multiple grid sizes** — 6×6 (1 star), 8×8 and 10×10 (2 stars)
+- **No guessing** — every puzzle can be solved by reasoning alone, and has exactly one solution
 - **Non-adjacency check** — highlights conflicting stars
 - **Auto-save** — puzzle state saved and restored on next launch
 - **Hint** — two taps: the first says which cell is about to give, the second acts on it. A cell that contradicts the solution is always reported before a fresh one is revealed
@@ -34,14 +35,18 @@ Place exactly N stars per row, column, and bold outlined region. No two stars ma
 | New puzzle | Tap **New game** |
 | Show rules | Tap **Rules** |
 
-## Known limitations
+## How puzzles are made
 
-Generation now requires the region layout to have exactly one valid
-star placement, verified by a bounded backtracking solver. In the rare
-case where the retry budget is exhausted before a proven-unique layout
-is found, generation falls back to the best structurally-valid layout
-found (guaranteed to have at least one solution, just not proven to be
-the only one).
+A star placement is drawn first, then the regions grow around it, some of
+them kept small. A logic solver that never guesses then works through the
+grid using only a player's deductions: a star empties its eight
+neighbours; a full row, column or region has no more stars; the ways a
+row, column or region can still place its stars; and counting the regions
+that fit inside a band of rows or columns. Where it gets stuck, a cell
+moves to a finished neighbouring region and it tries again. A puzzle is
+kept only once the solver fills the whole grid, which also proves its
+solution unique. Should that ever fail, a stored puzzle of the chosen size,
+checked the same way, is used instead.
 
 ## License
 

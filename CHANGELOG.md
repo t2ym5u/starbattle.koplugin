@@ -2,6 +2,34 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.7.0] - 2026-11-05
+
+### Changed
+- Every puzzle can now be solved by reasoning alone, without trial and
+  error. Before, most 10×10 puzzles (29 out of 30 measured) and some 8×8
+  ones could only be finished by guessing a star and seeing whether it led
+  to a contradiction. A new solver applies only the deductions a player
+  makes (a star empties its neighbours; a full row, column or region; the
+  ways a row, column or region can still place its stars; counting the
+  regions that fit inside a band of rows or columns), and a puzzle is kept
+  only once that solver fills the whole grid, which also proves its
+  solution is the only one.
+- Puzzles are now built around a star placement: the regions grow from
+  the stars, some of them kept small so the solving has a place to start,
+  and where the solver gets stuck a cell is handed to a finished
+  neighbouring region. No region is a lone cell (or, with 2 stars, a bare
+  pair) that just gives its stars away, and a grid the basic rules alone
+  fill is turned down.
+- Faster: at most about 30 ms on a desktop (under 1 s on a Kobo) at every
+  size, down from about 0.1 s at 10×10. Same seed, same puzzle on every
+  device. The puzzles themselves differ from earlier versions.
+
+### Fixed
+- When no puzzle could be built in time, the game no longer falls back to
+  a layout with possibly several solutions, nor silently switches to a
+  6×6 grid: it uses a stored puzzle of the size you chose, checked the
+  same way.
+
 ## [1.6.1] - 2026-11-04
 
 ### Fixed

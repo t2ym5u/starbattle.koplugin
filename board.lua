@@ -23,7 +23,9 @@ local MARK_STAR  = 1
 local MARK_DOT   = 2
 
 -- ---------------------------------------------------------------------------
--- Region generation via BFS flood-fill from N random seeds
+-- Region generation via BFS flood-fill from N random seeds. Since 1.7.0
+-- puzzles are built around a star placement instead (regionsAround); this
+-- stays for the specs, which count the solutions of random layouts.
 -- ---------------------------------------------------------------------------
 
 local DIR4 = { {-1,0},{1,0},{0,-1},{0,1} }
@@ -125,6 +127,9 @@ end
 -- and ran out of its node budget on more than half of the 10x10 layouts
 -- (3-7 s per puzzle on a desktop, minutes on a Kobo); this one enumerates
 -- solutions in the same order, with the same counts.
+--
+-- Since 1.7.0 the generator no longer uses it (logicSolve proves a puzzle
+-- unique as it solves it); the specs keep it as an independent check.
 -- ---------------------------------------------------------------------------
 
 local combo_cache = {}
@@ -183,7 +188,7 @@ local scratch_cache = {}
 
 -- dead (optional): the dead ends found so far, per row (see below), to
 -- carry over to a recount of a layout changed only in rows up to some row
--- (tweakUntilUnique).
+-- (what the 1.6 generator did between region tweaks).
 local function countSolutions(n, k, region_id, limit, node_budget, dead)
     local combos = rowCombos(n, k)
     local compat = rowCompat(n, k)
@@ -500,133 +505,791 @@ local function regionMove(region_id, n, x, target)
     return out, to
 end
 
--- A layout with several solutions is kept, and its first solution S taken
--- as the answer: a cell that holds a star in another solution but not in S
--- moves to a neighbouring region (see regionMove). S keeps exactly k stars
--- per region (the moved cells had none), the other solution now has too
--- few in the cell's old region, and the next count either proves S unique
--- or shows the next rival. Returns true once S is the only solution.
-local MAX_REGION_TWEAKS = 40
+-- ---------------------------------------------------------------------------
+-- Logic solver: the deductions a player makes, never "suppose this cell
+-- holds a star and see what breaks". A puzzle is only kept once this solver
+-- fills the whole grid from the regions alone; every step it takes is
+-- forced, so that also proves the solution unique.
+--
+--   tier 1  a star empties its eight neighbours; a row, column or region
+--           with its k stars has the rest empty; one with exactly as many
+--           open cells as missing stars has a star in each.
+--   tier 2  counting over a band of m consecutive rows (or columns): when
+--           m regions lie entirely inside the band they take all its
+--           stars, so the band's other cells are empty; when the band's
+--           open cells belong to m regions only, those regions put all
+--           their stars inside it, so their cells outside are empty.
+--   tier 3  one row, column or region at a time, the ways its missing
+--           stars can still sit (never touching, never more than another
+--           row/column/region can take): a cell in every way gets a star, a
+--           cell in none is empty, and a cell that every way rules out (a
+--           neighbour of its stars, or the rest of a row/column/region they
+--           fill up) is empty.
+--
+-- Each pass takes the first deduction of the lowest tier that has one.
+-- Cells are numbered (r - 1) * n + c; s[i] is 0 (open), 1 (star) or -1.
+-- Returns (solved, s, steps) where steps[t] counts the tier-t passes.
+-- ---------------------------------------------------------------------------
 
--- dead: countSolutions' dead ends for this layout, kept from count to count.
-local function tweakUntilUnique(n, k, region_id, target, rival, node_budget, dead)
-    for step = 1, MAX_REGION_TWEAKS do
-        local xs = {}
-        for r = 1, n do
-            for c = 1, n do
-                if rival[r][c] == 1 and target[r][c] == 0 then xs[#xs + 1] = { r, c } end
-            end
-        end
-        shuffle(xs)
-        local moved = false
-        for _, x in ipairs(xs) do
-            local cells, to = regionMove(region_id, n, x, target)
-            if cells then
-                local last = 0
-                for _, cell in ipairs(cells) do
-                    region_id[cell[1]][cell[2]] = to
-                    if cell[1] > last then last = cell[1] end
+-- Per size: king-move neighbours, row and column of each cell.
+local geo_cache = {}
+local function geometry(n)
+    local geo = geo_cache[n]
+    if geo then return geo end
+    local nb, rowOf, colOf = {}, {}, {}
+    for r = 1, n do
+        for c = 1, n do
+            local i = (r - 1) * n + c
+            rowOf[i], colOf[i] = r, c
+            local list = {}
+            for dr = -1, 1 do
+                for dc = -1, 1 do
+                    local a, b = r + dr, c + dc
+                    if (dr ~= 0 or dc ~= 0) and a >= 1 and a <= n and b >= 1 and b <= n then
+                        list[#list + 1] = (a - 1) * n + b
+                    end
                 end
-                -- dead ends above the last changed row may not be any more
-                for r = 1, last - 1 do dead[r] = {} end
-                moved = true
-                break
             end
-        end
-        if not moved then return false, step - 1 end
-        local solutions, exhausted, first, second = countSolutions(n, k, region_id, 2, node_budget, dead)
-        if exhausted or solutions == 0 then return false, step end
-        if solutions == 1 then return true, step end
-        rival = second
-        for r = 1, n do
-            for c = 1, n do
-                if first[r][c] ~= target[r][c] then rival = first; break end
-            end
-            if rival == first then break end
+            nb[i] = list
         end
     end
-    return false, MAX_REGION_TWEAKS
+    geo = { nb = nb, rowOf = rowOf, colOf = colOf }
+    geo_cache[n] = geo
+    return geo
+end
+
+local function logicSolve(n, k, region_id)
+    local N = n * n
+    local geo = geometry(n)
+    local nb, rowOf, colOf = geo.nb, geo.rowOf, geo.colOf
+    -- units 1..n: rows, n+1..2n: columns, 2n+1..3n: regions; a cell is in
+    -- units rowOf[i], n + colOf[i] and gu[i]
+    local nunits = 3 * n
+    local units, gu, reg = {}, {}, {}
+    for u = 1, nunits do units[u] = {} end
+    local s = {}
+    for i = 1, N do
+        local r, c = rowOf[i], colOf[i]
+        s[i] = 0
+        local g = region_id[r][c]
+        reg[i] = g
+        gu[i] = 2 * n + g
+        local ur, uc, ug = units[r], units[n + c], units[2 * n + g]
+        ur[#ur + 1] = i
+        uc[#uc + 1] = i
+        ug[#ug + 1] = i
+    end
+    local open, bad = N, false
+    local steps = { 0, 0, 0 }
+    -- dirty[u]: unit u may give tier 3 something new. A new empty cell
+    -- only changes the placements of its own units (it can't make a
+    -- placement rule more out); a new star changes what every unit needs.
+    local dirty = {}
+    for u = 1, nunits do dirty[u] = true end
+
+    local function setEmpty(i)
+        local v = s[i]
+        if v == -1 then return end
+        if v == 1 then bad = true; return end
+        s[i] = -1
+        open = open - 1
+        dirty[rowOf[i]], dirty[n + colOf[i]], dirty[gu[i]] = true, true, true
+    end
+    local function setStar(i)
+        local v = s[i]
+        if v == 1 then return end
+        if v == -1 then bad = true; return end
+        s[i] = 1
+        open = open - 1
+        for u = 1, nunits do dirty[u] = true end
+        local l = nb[i]
+        for x = 1, #l do
+            local j = l[x]
+            if s[j] == 1 then bad = true elseif s[j] == 0 then s[j] = -1; open = open - 1 end
+        end
+    end
+
+    local function tier1()
+        local progress = false
+        for u = 1, nunits do
+            local l, t, un = units[u], 0, 0
+            for x = 1, #l do
+                local v = s[l[x]]
+                if v == 1 then t = t + 1 elseif v == 0 then un = un + 1 end
+            end
+            if t > k or t + un < k then bad = true; return progress end
+            if un > 0 and t == k then
+                for x = 1, #l do if s[l[x]] == 0 then setEmpty(l[x]) end end
+                progress = true
+            elseif un > 0 and t + un == k then
+                for x = 1, #l do if s[l[x]] == 0 then setStar(l[x]) end end
+                progress = true
+                if bad then return progress end
+            end
+        end
+        return progress
+    end
+
+    -- tier 2: pre[(g - 1) * (n + 1) + x + 1] = region g's open-or-star
+    -- cells in lines 1..x of the axis
+    local pre, stride = {}, n + 1
+    local function tier2()
+        for axis = 0, 1 do
+            local line = axis == 0 and rowOf or colOf
+            for x = 1, n * stride do pre[x] = 0 end
+            for i = 1, N do
+                if s[i] ~= -1 then
+                    local p = (reg[i] - 1) * stride + line[i] + 1
+                    pre[p] = pre[p] + 1
+                end
+            end
+            for g = 1, n do
+                local base = (g - 1) * stride
+                for x = 2, stride do pre[base + x] = pre[base + x] + pre[base + x - 1] end
+            end
+            for a = 1, n do
+                for b = a, n - 1 do
+                    local m = b - a + 1
+                    local inside, touching = 0, 0
+                    for g = 1, n do
+                        local base = (g - 1) * stride
+                        local here = pre[base + b + 1] - pre[base + a]
+                        if here > 0 then
+                            touching = touching + 1
+                            if here == pre[base + stride] then inside = inside + 1 end
+                        end
+                    end
+                    if inside > m or touching < m then bad = true; return false end
+                    if inside == m or touching == m then
+                        local progress = false
+                        for i = 1, N do
+                            if s[i] == 0 then
+                                local base = (reg[i] - 1) * stride
+                                local here = pre[base + b + 1] - pre[base + a]
+                                local inband = line[i] >= a and line[i] <= b
+                                if inband then
+                                    if inside == m and here ~= pre[base + stride] then
+                                        setEmpty(i); progress = true
+                                    end
+                                elseif touching == m and here > 0 then
+                                    setEmpty(i); progress = true
+                                end
+                            end
+                        end
+                        if progress then return true end
+                    end
+                end
+            end
+        end
+        return false
+    end
+
+    -- tier 3. A placement pl[1..sz] puts a unit's missing stars; it fits
+    -- when no two touch and no unit gets more than it needs (tally: the
+    -- placement's stars per unit while it is looked at).
+    local need, tally = {}, {}
+    for u = 1, nunits do tally[u] = 0 end
+    local unk, held, cand, mark = {}, {}, {}, {}
+    local pl1, pl2
+    local function tallyAdd(i, d)
+        local a, b, c = rowOf[i], n + colOf[i], gu[i]
+        tally[a] = tally[a] + d
+        tally[b] = tally[b] + d
+        tally[c] = tally[c] + d
+        return tally[a] <= need[a] and tally[b] <= need[b] and tally[c] <= need[c]
+    end
+    local function full(w)
+        local t = tally[w]
+        return t > 0 and t == need[w]
+    end
+    -- open cell j outside the unit is ruled out by the placement looked at
+    local function ruledOut(j)
+        local rj, cj = rowOf[j], colOf[j]
+        if math.abs(rowOf[pl1] - rj) <= 1 and math.abs(colOf[pl1] - cj) <= 1 then return true end
+        if pl2 and math.abs(rowOf[pl2] - rj) <= 1 and math.abs(colOf[pl2] - cj) <= 1 then return true end
+        return full(rj) or full(n + cj) or full(gu[j])
+    end
+    -- what the placement looked at rules out, as the first candidates
+    local nc, cur_u = 0, 0
+    local function add(j)
+        if s[j] == 0 and mark[j] ~= cur_u and rowOf[j] ~= cur_u
+                and n + colOf[j] ~= cur_u and gu[j] ~= cur_u then
+            mark[j] = cur_u
+            nc = nc + 1
+            cand[nc] = j
+        end
+    end
+    local function addStar(a)
+        local l = nb[a]
+        for y = 1, #l do add(l[y]) end
+        local w = rowOf[a]
+        for y = 1, 3 do
+            if w ~= cur_u and full(w) then
+                local lw = units[w]
+                for z = 1, #lw do add(lw[z]) end
+            end
+            w = y == 1 and n + colOf[a] or gu[a]
+        end
+    end
+    local function collect(u)
+        nc, cur_u = 0, u
+        addStar(pl1)
+        if pl2 then addStar(pl2) end
+        return nc
+    end
+
+    local function tier3()
+        for u = 1, nunits do
+            local l, t, un = units[u], 0, 0
+            for x = 1, #l do
+                local v = s[l[x]]
+                if v == 1 then t = t + 1 elseif v == 0 then un = un + 1 end
+            end
+            need[u] = k - t
+        end
+        for i = 1, N do mark[i] = 0 end
+        -- smallest units first: the fewest ways to look at
+        local order, size = {}, {}
+        for u = 1, nunits do
+            if need[u] > 0 and dirty[u] then
+                local l, nu = units[u], 0
+                for x = 1, #l do if s[l[x]] == 0 then nu = nu + 1 end end
+                order[#order + 1] = u
+                size[u] = nu * 64 + u
+            end
+        end
+        table.sort(order, function(a, b) return size[a] < size[b] end)
+        for oi = 1, #order do
+            local u = order[oi]
+            local want = need[u]
+            do
+                dirty[u] = false
+                local l, nu = units[u], 0
+                for x = 1, #l do
+                    local j = l[x]
+                    if s[j] == 0 then nu = nu + 1; unk[nu] = j; held[j] = 0 end
+                end
+                if nu > want then
+                    -- pass 1: how many placements, and which cells they hold
+                    local count = 0
+                    for a = 1, nu do
+                        local ca = unk[a]
+                        if want == 1 then
+                            if tallyAdd(ca, 1) then
+                                count = count + 1
+                                held[ca] = held[ca] + 1
+                            end
+                            tallyAdd(ca, -1)
+                        else
+                            local oka = tallyAdd(ca, 1)
+                            for b = a + 1, nu do
+                                local cb = unk[b]
+                                if math.abs(rowOf[ca] - rowOf[cb]) > 1 or math.abs(colOf[ca] - colOf[cb]) > 1 then
+                                    if tallyAdd(cb, 1) and oka then
+                                        count = count + 1
+                                        held[ca] = held[ca] + 1
+                                        held[cb] = held[cb] + 1
+                                    end
+                                    tallyAdd(cb, -1)
+                                end
+                            end
+                            tallyAdd(ca, -1)
+                        end
+                    end
+                    if count == 0 then bad = true; return false end
+                    local progress = false
+                    for x = 1, nu do
+                        local j = unk[x]
+                        if held[j] == count then setStar(j); progress = true
+                        elseif held[j] == 0 then setEmpty(j); progress = true end
+                    end
+                    if progress or bad then return progress end
+                    -- pass 2: the cells outside u every placement rules out
+                    local first = true
+                    nc = 0
+                    for a = 1, nu do
+                        if not first and nc == 0 then break end
+                        local ca = unk[a]
+                        if want == 1 then
+                            if tallyAdd(ca, 1) then
+                                pl1, pl2 = ca, nil
+                                if first then
+                                    nc, first = collect(u), false
+                                else
+                                    local m = 0
+                                    for x = 1, nc do
+                                        if ruledOut(cand[x]) then m = m + 1; cand[m] = cand[x] end
+                                    end
+                                    nc = m
+                                end
+                            end
+                            tallyAdd(ca, -1)
+                        else
+                            local oka = tallyAdd(ca, 1)
+                            for b = a + 1, nu do
+                                if not first and nc == 0 then break end
+                                local cb = unk[b]
+                                if math.abs(rowOf[ca] - rowOf[cb]) > 1 or math.abs(colOf[ca] - colOf[cb]) > 1 then
+                                    if tallyAdd(cb, 1) and oka then
+                                        pl1, pl2 = ca, cb
+                                        if first then
+                                            nc, first = collect(u), false
+                                        else
+                                            local m = 0
+                                            for x = 1, nc do
+                                                if ruledOut(cand[x]) then m = m + 1; cand[m] = cand[x] end
+                                            end
+                                            nc = m
+                                        end
+                                    end
+                                    tallyAdd(cb, -1)
+                                end
+                            end
+                            tallyAdd(ca, -1)
+                        end
+                    end
+                    for x = 1, nc do setEmpty(cand[x]); progress = true end
+                    if progress or bad then return progress end
+                end
+            end
+        end
+        return false
+    end
+
+    while true do
+        if bad then return false, s, steps end
+        if open == 0 then
+            tier1()
+            return not bad, s, steps
+        end
+        if tier1() then
+            steps[1] = steps[1] + 1
+        elseif tier2() then
+            steps[2] = steps[2] + 1
+        elseif not bad and tier3() then
+            steps[3] = steps[3] + 1
+        else
+            return false, s, steps
+        end
+    end
+end
+
+-- A random star placement: k stars per row and column, none touching.
+-- Rows are filled in order with their k-column combos shuffled; a column
+-- that can no longer reach k stars in the rows left (one every other row)
+-- turns the row down. Nil after `budget` rows tried.
+local function randomStars(n, k, budget)
+    local combos, compat = rowCombos(n, k), rowCompat(n, k)
+    local col_count = {}
+    for c = 1, n do col_count[c] = 0 end
+    local chosen, lists, pos = { [0] = 0 }, {}, {}
+    local nodes = 0
+    local function enter(r)
+        local src = compat[chosen[r - 1]]
+        local l = {}
+        for i = 1, #src do l[i] = src[i] end
+        shuffle(l)
+        lists[r], pos[r] = l, 1
+    end
+    enter(1)
+    local r = 1
+    while r >= 1 do
+        nodes = nodes + 1
+        if nodes > budget then return nil end
+        local l, pick = lists[r], nil
+        while pos[r] <= #l do
+            local ci = l[pos[r]]
+            pos[r] = pos[r] + 1
+            local cb, ok = combos[ci], true
+            for i = 1, k do
+                if col_count[cb[i]] >= k then ok = false; break end
+            end
+            if ok then
+                for i = 1, k do col_count[cb[i]] = col_count[cb[i]] + 1 end
+                local left = n - r
+                for c = 1, n do
+                    if k - col_count[c] > math.ceil(left / 2) then ok = false; break end
+                end
+                if ok then
+                    pick = ci
+                    break
+                end
+                for i = 1, k do col_count[cb[i]] = col_count[cb[i]] - 1 end
+            end
+        end
+        if pick then
+            chosen[r] = pick
+            if r == n then
+                local sol = emptyGrid(n, n, 0)
+                for rr = 1, n do
+                    local cb = combos[chosen[rr]]
+                    for i = 1, k do sol[rr][cb[i]] = 1 end
+                end
+                return sol
+            end
+            r = r + 1
+            enter(r)
+        else
+            r = r - 1
+            if r >= 1 then
+                local cb = combos[chosen[r]]
+                for i = 1, k do col_count[cb[i]] = col_count[cb[i]] - 1 end
+            end
+        end
+    end
+    return nil
+end
+
+-- n regions around a star placement, k stars each. With k = 2, each star
+-- (in random order) is paired with the nearest star still free and the two
+-- are joined by a shortest path of free cells; that pair, or the lone star
+-- when k = 1, starts a region. Then regions take a random free neighbouring
+-- cell in turn until the grid is full (every star is placed by then, so
+-- each region keeps exactly k). Nil when a pair can't be joined.
+local function joinPath(n, sol, region_id, a, b)
+    local parent = { [a[1] * 100 + a[2]] = false }
+    local queue, head = { a }, 1
+    local dirs = {}
+    while head <= #queue do
+        local cur = queue[head]
+        head = head + 1
+        if cur[1] == b[1] and cur[2] == b[2] then
+            local path, cell = {}, cur
+            while cell do
+                path[#path + 1] = cell
+                cell = parent[cell[1] * 100 + cell[2]]
+            end
+            return path
+        end
+        for i = 1, 4 do dirs[i] = DIR4[i] end
+        shuffle(dirs)
+        for _, d in ipairs(dirs) do
+            local nr, nc = cur[1] + d[1], cur[2] + d[2]
+            local key = nr * 100 + nc
+            if inBounds(nr, nc, n) and region_id[nr][nc] == 0 and parent[key] == nil
+                    and (sol[nr][nc] == 0 or (nr == b[1] and nc == b[2])) then
+                parent[key] = cur
+                queue[#queue + 1] = { nr, nc }
+            end
+        end
+    end
+    return nil
+end
+
+local function regionsAround(n, k, sol, small, extra_lo, extra_hi)
+    local region_id = emptyGrid(n, n, 0)
+    local stars = {}
+    for r = 1, n do
+        for c = 1, n do
+            if sol[r][c] == 1 then stars[#stars + 1] = { r, c } end
+        end
+    end
+    shuffle(stars)
+    local frontier, paired, g = {}, {}, 0
+    local left = n * n
+    for si, a in ipairs(stars) do
+        if not paired[si] then
+            paired[si] = true
+            g = g + 1
+            local cells = { a }
+            if k == 2 then
+                local bj, bd
+                for sj = si + 1, #stars do
+                    if not paired[sj] then
+                        local b = stars[sj]
+                        local d = math.abs(a[1] - b[1]) + math.abs(a[2] - b[2])
+                        if not bd or d < bd then bj, bd = sj, d end
+                    end
+                end
+                paired[bj] = true
+                cells = joinPath(n, sol, region_id, a, stars[bj])
+                if not cells then return nil end
+            end
+            for _, cell in ipairs(cells) do
+                region_id[cell[1]][cell[2]] = g
+                left = left - 1
+            end
+            frontier[g] = cells
+        end
+    end
+    -- The first floor(n * small) regions (random ones: the stars were
+    -- shuffled) stop at extra_lo to extra_hi cells more than they start with,
+    -- unless nothing else can grow.
+    local order, dirs = {}, {}
+    local cap, size = {}, {}
+    for g = 1, n do
+        size[g] = #frontier[g]
+        cap[g] = g <= math.floor(n * small) and size[g] + math.random(extra_lo, extra_hi) or n * n
+    end
+    local all = false
+    while left > 0 do
+        local grew = false
+        for g = 1, n do order[g] = g end
+        shuffle(order)
+        for _, g in ipairs(order) do
+            local fr = frontier[g]
+            while #fr > 0 and (all or size[g] < cap[g]) do
+                local fi = math.random(#fr)
+                local cell = fr[fi]
+                for i = 1, 4 do dirs[i] = DIR4[i] end
+                shuffle(dirs)
+                local took = false
+                for _, d in ipairs(dirs) do
+                    local nr, nc = cell[1] + d[1], cell[2] + d[2]
+                    if inBounds(nr, nc, n) and region_id[nr][nc] == 0 then
+                        region_id[nr][nc] = g
+                        size[g] = size[g] + 1
+                        fr[#fr + 1] = { nr, nc }
+                        left = left - 1
+                        took = true
+                        break
+                    end
+                end
+                if took then grew = true; break end
+                table.remove(fr, fi)
+            end
+        end
+        if not grew then
+            if all then return nil end
+            all = true
+        else
+            all = false
+        end
+    end
+    return region_id
+end
+
+-- Whether the region of cell (r, c) stays in one piece, and keeps at least
+-- min_size cells, without that cell.
+local function regionStaysWhole(region_id, n, r, c, min_size)
+    local g = region_id[r][c]
+    local start, total = nil, 0
+    for rr = 1, n do
+        for cc = 1, n do
+            if region_id[rr][cc] == g and (rr ~= r or cc ~= c) then
+                total = total + 1
+                start = start or { rr, cc }
+            end
+        end
+    end
+    if total < min_size then return false end
+    local seen = { [start[1] * 100 + start[2]] = true }
+    local stack, reached = { start }, 1
+    while #stack > 0 do
+        local cur = table.remove(stack)
+        for _, d in ipairs(DIR4) do
+            local nr, nc = cur[1] + d[1], cur[2] + d[2]
+            local key = nr * 100 + nc
+            if inBounds(nr, nc, n) and region_id[nr][nc] == g and not seen[key]
+                    and (nr ~= r or nc ~= c) then
+                seen[key] = true
+                reached = reached + 1
+                stack[#stack + 1] = { nr, nc }
+            end
+        end
+    end
+    return reached == total
+end
+
+local function copyRegions(region_id, n)
+    local out = {}
+    for r = 1, n do
+        out[r] = {}
+        for c = 1, n do out[r][c] = region_id[r][c] end
+    end
+    return out
+end
+
+local function openCount(s)
+    local o = 0
+    for i = 1, #s do if s[i] == 0 then o = o + 1 end end
+    return o
+end
+
+-- Per size (tuned on 100 seeds each):
+--   small   share of the regions that stay small: their stars, the cells
+--           joining them, and extra[1] to extra[2] cells more. Small
+--           regions give the solver its first steps; with none, a 10x10
+--           layout leaves it nothing to start from.
+--   max_open  a first solve leaving this many open cells or more starts
+--           over at once (those rarely come right with a few tweaks)
+--   tweaks  region tweaks per star placement before starting over
+local GEN = {
+    [6]  = { small = 0.5, extra = { 1, 2 }, max_open = nil, tweaks = 10 },
+    [8]  = { small = 0,   extra = { 0, 0 }, max_open = 20,  tweaks = 10 },
+    [10] = { small = 0.6, extra = { 0, 1 }, max_open = 20,  tweaks = 10 },
+}
+local GEN_DEFAULT = GEN[10]
+local MAX_ATTEMPTS = 100
+
+-- One puzzle the logic solver fully solves, or nil after MAX_ATTEMPTS star
+-- placements. Counts, never the clock, so a seed gives the same puzzle on
+-- every device (the Daily Challenge relies on that).
+local function buildPuzzle(n, k, on_progress)
+    local gen = GEN[n] or GEN_DEFAULT
+    local min_size = k == 1 and 2 or 3   -- no region that just gives its stars away
+    for attempt = 1, MAX_ATTEMPTS do
+        if on_progress then on_progress(attempt / (attempt + 4)) end
+        local sol = randomStars(n, k, 20 * n * n)
+        local region_id = sol and regionsAround(n, k, sol, gen.small, gen.extra[1], gen.extra[2])
+        if region_id then
+            local solved, s, steps = logicSolve(n, k, region_id)
+            local tweak = 0
+            if gen.max_open and openCount(s) >= gen.max_open then tweak = gen.tweaks end
+            -- Where the solver gets stuck, an open cell without a star
+            -- next to a region whose stars it has all found moves into that
+            -- region: there it is empty at once, and its old region has one
+            -- place fewer for its stars. The solution keeps k stars per
+            -- region, so it stays a solution; the solver then starts over
+            -- on the new layout.
+            while not solved and tweak < gen.tweaks do
+                tweak = tweak + 1
+                local done = {}
+                for g = 1, n do done[g] = 0 end
+                for i = 1, n * n do
+                    if s[i] == 1 then
+                        local g = region_id[math.floor((i - 1) / n) + 1][(i - 1) % n + 1]
+                        done[g] = done[g] + 1
+                    end
+                end
+                local moves = {}
+                for i = 1, n * n do
+                    local r, c = math.floor((i - 1) / n) + 1, (i - 1) % n + 1
+                    if s[i] == 0 and sol[r][c] == 0 then
+                        local g = region_id[r][c]
+                        for _, d in ipairs(DIR4) do
+                            local nr, nc = r + d[1], c + d[2]
+                            if inBounds(nr, nc, n) then
+                                local h = region_id[nr][nc]
+                                if h ~= g and done[h] == k then
+                                    moves[#moves + 1] = { r, c, h }
+                                end
+                            end
+                        end
+                    end
+                end
+                shuffle(moves)
+                local cand
+                for _, mv in ipairs(moves) do
+                    if regionStaysWhole(region_id, n, mv[1], mv[2], min_size) then
+                        cand = copyRegions(region_id, n)
+                        cand[mv[1]][mv[2]] = mv[3]
+                        break
+                    end
+                end
+                if not cand then
+                    -- none: some open cell without a star moves to a
+                    -- neighbouring region, with what it takes to keep
+                    -- both whole (regionMove)
+                    local xs = {}
+                    for i = 1, n * n do
+                        local r, c = math.floor((i - 1) / n) + 1, (i - 1) % n + 1
+                        if s[i] == 0 and sol[r][c] == 0 then xs[#xs + 1] = { r, c } end
+                    end
+                    shuffle(xs)
+                    for xi = 1, math.min(#xs, 3) do
+                        local x = xs[xi]
+                        local cells, to = regionMove(region_id, n, x, sol)
+                        if cells then
+                            local g = region_id[x[1]][x[2]]
+                            local left = -#cells
+                            for r = 1, n do
+                                for c = 1, n do
+                                    if region_id[r][c] == g then left = left + 1 end
+                                end
+                            end
+                            if left >= min_size then
+                                cand = copyRegions(region_id, n)
+                                for _, cell in ipairs(cells) do cand[cell[1]][cell[2]] = to end
+                                break
+                            end
+                        end
+                    end
+                end
+                if not cand then break end
+                region_id = cand
+                solved, s, steps = logicSolve(n, k, region_id)
+            end
+            -- a grid the basic rules alone fill is no puzzle: start over
+            if solved and steps[2] + steps[3] > 0 then return region_id, sol end
+        end
+    end
+    return nil
+end
+
+-- One stored puzzle per size, the fallback should buildPuzzle ever come
+-- back empty (never seen in testing): letters are regions, the comment is
+-- the solution. Built by buildPuzzle; the specs check that logicSolve
+-- solves each one and that it has exactly one solution.
+local STORED = {
+    [6] = { k = 1, regions = {
+            "CCCCFB", -- ....*.
+            "CCDFFB", -- .*....
+            "CCDDFB", -- ...*..
+            "AAADBB", -- *.....
+            "AEEDBB", -- ..*...
+            "EEDDBB", -- .....*
+    } },
+    [8] = { k = 2, regions = {
+            "AAAAEECC", -- .*.*....
+            "AFAFEECC", -- .....*.*
+            "AFFFEECC", -- .*.*....
+            "BFFHEECC", -- .....*.*
+            "BHHHEGGD", -- *.*.....
+            "BBHGGGGD", -- ....*.*.
+            "BBHHGGGD", -- *.*.....
+            "BBHDDDDD", -- ....*.*.
+    } },
+    [10] = { k = 2, regions = {
+            "JJJJAAGGEE", -- .....*..*.
+            "HJJAAAGGEE", -- .*.*......
+            "HHJJJJGGGE", -- ......*..*
+            "HHIJIJGGGG", -- .*..*.....
+            "HHIIIJGJJJ", -- ......*.*.
+            "HIIIJJJJBJ", -- *..*......
+            "HHIIJJJBBB", -- .......*.*
+            "HHCCCFFFFF", -- ..*.*.....
+            "DDFFCFFFFF", -- *......*..
+            "DDDFFFFFFF", -- ..*..*....
+    } },
+}
+
+-- The stored puzzle for size n with k stars (nil if there is none), with
+-- its solution worked out by logicSolve.
+local function storedPuzzle(n, k)
+    local p = STORED[n]
+    if not p or p.k ~= k then return nil end
+    local region_id = emptyGrid(n, n, 0)
+    for r = 1, n do
+        for c = 1, n do region_id[r][c] = p.regions[r]:byte(c) - 64 end
+    end
+    local solved, s = logicSolve(n, k, region_id)
+    if not solved then return nil end
+    local sol = emptyGrid(n, n, 0)
+    for i = 1, n * n do
+        if s[i] == 1 then sol[math.floor((i - 1) / n) + 1][(i - 1) % n + 1] = 1 end
+    end
+    return region_id, sol
 end
 
 -- on_progress (optional): called with a 0..1 fraction as it goes.
 function StarBattleBoard:generate(on_progress)
     local n, k = self.n, self.k
-    -- Random-region layouts are often infeasible for a given k (measured
-    -- ~91% single-attempt failure at n=8/k=2), and among the feasible ones
-    -- only a few are unique: ~7% at n=6/k=1, under 1% at n=10/k=2. 6x6 and
-    -- 8x8 find a unique one by plain retries within milliseconds. At 10x10
-    -- that took ~1000 layouts (3-7 s on a desktop, minutes on a Kobo, and
-    -- ~10% of games still fell back to an unproven layout), so there a
-    -- feasible layout with rivals is tweaked until its first solution is
-    -- the only one (tweakUntilUnique). Falls back to the best
-    -- structurally-valid-but-unproven layout found if the budget runs out,
-    -- same as nurikabe/hitori's approach.
-    local max_attempts = 2000
-    -- Node and count caps, not time, so a seed gives the same puzzle on any
-    -- device. The solver needs well under node_budget on every layout
-    -- measured; at 10x10 a puzzle took at most 116 counts over 300 seeds
-    -- (median 16), so MAX_COUNTS is a safety net.
-    local node_budget = 200000
-    local tweak = n >= 10
-    local MAX_COUNTS = 600
-    local counts = 0
-    local best_region_id, best_solution
-
-    for attempt = 1, max_attempts do
-        if tweak and counts >= MAX_COUNTS then break end
-        if on_progress then on_progress(counts / (counts + 30)) end
-        local region_id = generateRegions(n)
-        local dead
-        if tweak then
-            dead = {}
-            for r = 1, n do dead[r] = {} end
-        end
-        local solutions, exhausted, sol, rival = countSolutions(n, k, region_id, 2, node_budget, dead)
-        counts = counts + 1
-        local unique = not exhausted and solutions == 1
-        if sol and tweak and not unique and not exhausted then
-            -- Tweaking keeps sol a solution, so the layout stays a valid
-            -- (if unproven) fallback whatever happens.
-            local used
-            unique, used = tweakUntilUnique(n, k, region_id, sol, rival, node_budget, dead)
-            counts = counts + used
-        end
-        if sol then
-            if not best_region_id then
-                best_region_id, best_solution = region_id, sol
-            end
-            if unique then
-                self.region_id = region_id
-                self.solution  = sol
-                self.marks     = emptyGrid(n, n, MARK_EMPTY)
-                self.won       = false
-                self.undo:clear()
-                return
-            end
-        end
+    local region_id, sol = buildPuzzle(n, k, on_progress)
+    if not region_id then
+        -- never seen in testing: a stored puzzle of the same size, also
+        -- solved by logicSolve, rather than an unproven one
+        region_id, sol = storedPuzzle(n, k)
     end
-    if best_region_id then
-        self.region_id = best_region_id
-        self.solution  = best_solution
-        self.marks     = emptyGrid(n, n, MARK_EMPTY)
-        self.won       = false
-        self.undo:clear()
-        return
+    if not region_id then
+        -- a size the menu doesn't offer (SIZES): the default size's
+        n, k = DEFAULT_N, DEFAULT_K
+        self.n, self.k = n, k
+        region_id, sol = storedPuzzle(n, k)
     end
-    -- Fallback: trivial 6x6 k=1 layout
-    self.n = 6; self.k = 1
-    local n2 = 6
-    local region_id = emptyGrid(n2, n2, 0)
-    for r = 1, n2 do
-        for c = 1, n2 do
-            region_id[r][c] = r  -- each row is its own region
-        end
-    end
-    local sol = emptyGrid(n2, n2, 0)
-    for r = 1, n2 do sol[r][r] = 1 end
     self.region_id = region_id
     self.solution  = sol
-    self.marks     = emptyGrid(n2, n2, MARK_EMPTY)
+    self.marks     = emptyGrid(n, n, MARK_EMPTY)
     self.won       = false
     self.undo:clear()
 end
@@ -812,6 +1475,9 @@ StarBattleBoard.DEFAULT_N  = DEFAULT_N
 StarBattleBoard.DEFAULT_K  = DEFAULT_K
 -- for the specs
 StarBattleBoard._countSolutions  = countSolutions
+StarBattleBoard._logicSolve      = logicSolve
+StarBattleBoard._buildPuzzle     = buildPuzzle
+StarBattleBoard._storedPuzzle    = storedPuzzle
 StarBattleBoard._generateRegions = generateRegions
 
 return StarBattleBoard

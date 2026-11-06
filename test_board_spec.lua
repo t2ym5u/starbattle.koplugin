@@ -270,6 +270,143 @@ describe("StarBattleBoard", function()
         end)
     end)
 
+    -- 1.7.0: a puzzle is kept only once a logic solver that never guesses
+    -- (no "suppose a star here and see what breaks") fills the grid from
+    -- the regions alone. Before, 10x10 puzzles needed trial and error 29
+    -- times out of 30, and the fallbacks could hand out an unproven layout
+    -- or silently switch to 6x6.
+    describe("logic solver and generator (1.7.0)", function()
+        local SEEDS = 30
+
+        local function regionSizes(b)
+            local sizes = {}
+            for r = 1, b.n do
+                for c = 1, b.n do
+                    local g = b.region_id[r][c]
+                    sizes[g] = (sizes[g] or 0) + 1
+                end
+            end
+            return sizes
+        end
+
+        local function toGrid(n, s)
+            local g = {}
+            for r = 1, n do
+                g[r] = {}
+                for c = 1, n do g[r][c] = s[(r - 1) * n + c] == 1 and 1 or 0 end
+            end
+            return g
+        end
+
+        it("solves every puzzle without guessing, and it is the only solution", function()
+            for _, size in ipairs(Board.SIZES) do
+                local n, k = size.n, size.k
+                for seed = 1, SEEDS do
+                    math.randomseed(seed * 1009 + n)
+                    local b = Board:new{ n = n, k = k }
+                    assert.are.equal(n, b.n)
+                    assert.are.equal(k, b.k)
+                    local solved, s, steps = Board._logicSolve(n, k, b.region_id)
+                    assert.is_true(solved, ("n=%d seed %d needs guessing"):format(n, seed))
+                    assert.are.same(b.solution, toGrid(n, s))
+                    -- more than the basic rules
+                    assert.is_true(steps[2] + steps[3] > 0, ("n=%d seed %d trivial"):format(n, seed))
+                    local count, exhausted, sol = Board._countSolutions(n, k, b.region_id, 2, 3000000)
+                    assert.is_false(exhausted)
+                    assert.are.equal(1, count, ("n=%d seed %d not unique"):format(n, seed))
+                    assert.are.same(b.solution, sol)
+                    -- n regions, none that just gives its stars away
+                    local sizes, regions = regionSizes(b), 0
+                    for _, cells in pairs(sizes) do
+                        regions = regions + 1
+                        assert.is_true(cells >= (k == 1 and 2 or 3))
+                    end
+                    assert.are.equal(n, regions)
+                end
+            end
+        end)
+
+        it("builds the same puzzle from the same seed", function()
+            for _, size in ipairs(Board.SIZES) do
+                math.randomseed(777)
+                local a = Board:new{ n = size.n, k = size.k }
+                math.randomseed(777)
+                local b = Board:new{ n = size.n, k = size.k }
+                assert.are.same(a.region_id, b.region_id)
+                assert.are.same(a.solution, b.solution)
+            end
+        end)
+
+        it("keeps a stored puzzle per size, solved without guessing", function()
+            for _, size in ipairs(Board.SIZES) do
+                local n, k = size.n, size.k
+                local region_id, sol = Board._storedPuzzle(n, k)
+                assert.is_not_nil(region_id, ("no stored %dx%d puzzle"):format(n, n))
+                local count, exhausted, only = Board._countSolutions(n, k, region_id, 2, 3000000)
+                assert.is_false(exhausted)
+                assert.are.equal(1, count)
+                assert.are.same(only, sol)
+            end
+        end)
+
+        -- Every deduction is forced: whenever the solver fills a random
+        -- layout, that layout has exactly that one solution, and it never
+        -- fills one that has none. (Checked on 5,962 layouts while writing
+        -- it, 883 of them filled: 0 mismatches.)
+        it("never claims a layout the backtracking count disagrees with", function()
+            for _, size in ipairs(Board.SIZES) do
+                local n, k = size.n, size.k
+                for seed = 1, (n == 10 and 15 or 60) do
+                    math.randomseed(seed * 4099 + n)
+                    local reg = Board._generateRegions(n)
+                    local solved, s = Board._logicSolve(n, k, reg)
+                    local count, exhausted, sol = Board._countSolutions(n, k, reg, 2, 3000000)
+                    assert.is_false(exhausted)
+                    if solved then
+                        assert.are.equal(1, count)
+                        assert.are.same(sol, toGrid(n, s))
+                    end
+                end
+            end
+        end)
+
+        -- generous bound for busted's plain Lua; LuaJIT on a desktop takes
+        -- under 40 ms per puzzle at worst (about 1 s on a Kobo Aura)
+        it("builds a puzzle quickly at every size", function()
+            for _, size in ipairs(Board.SIZES) do
+                local worst = 0
+                for seed = 1, 10 do
+                    math.randomseed(seed * 31 + size.n)
+                    local t0 = os.clock()
+                    Board:new{ n = size.n, k = size.k }
+                    worst = math.max(worst, os.clock() - t0)
+                end
+                assert.is_true(worst < 1.0, ("n=%d took %.2f s"):format(size.n, worst))
+            end
+        end)
+
+        it("loads a 1.6 save", function()
+            -- a 6x6 game saved by 1.6.1, one star placed
+            local data = {
+                n = 6, k = 1, won = false,
+                region_id = { 3,3,3,3,6,2, 3,3,4,6,6,2, 3,3,4,4,6,2,
+                              1,1,1,4,2,2, 1,5,5,4,2,2, 5,5,4,4,2,2 },
+                solution  = { 0,0,0,0,1,0, 0,1,0,0,0,0, 0,0,0,1,0,0,
+                              1,0,0,0,0,0, 0,0,1,0,0,0, 0,0,0,0,0,1 },
+                marks     = { 0,0,0,0,1,0, 0,0,0,0,0,0, 0,0,0,0,0,0,
+                              0,0,0,0,0,0, 0,0,0,0,0,0, 0,0,0,0,0,0 },
+            }
+            local b = Board:new{ empty = true }
+            assert.is_true(b:load(data))
+            assert.are.equal(6, b.n)
+            assert.are.equal(1, b.k)
+            assert.are.equal(Board.MARK_STAR, b.marks[1][5])
+            assert.are.equal(1, b:countStars())
+            b:reveal()
+            assert.is_true(b.won)
+        end)
+    end)
+
     describe("cycleCell / getConflicts / reveal", function()
         it("cycles a cell EMPTY→STAR→DOT→EMPTY", function()
             local b = newBoard(8, 2)
