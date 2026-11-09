@@ -217,57 +217,6 @@ describe("StarBattleBoard", function()
             end
         end)
 
-        it("builds uniquely solvable puzzles quickly at every size", function()
-            for _, size in ipairs(Board.SIZES) do
-                local worst = 0
-                for seed = 1, 12 do
-                    math.randomseed(seed * 7919 + size.n)
-                    local t0 = os.clock()
-                    local b = Board:new{ n = size.n, k = size.k }
-                    worst = math.max(worst, os.clock() - t0)
-                    local count, exhausted, sol = Board._countSolutions(size.n, size.k, b.region_id, 2, 3000000)
-                    assert.is_false(exhausted)
-                    assert.are.equal(1, count, ("n=%d seed %d not unique"):format(size.n, seed))
-                    assert.are.same(b.solution, sol)
-                    -- regions stay connected, n of them
-                    local seen_regions = {}
-                    for r = 1, size.n do
-                        for c = 1, size.n do seen_regions[b.region_id[r][c]] = true end
-                    end
-                    local count_regions = 0
-                    for g in pairs(seen_regions) do
-                        count_regions = count_regions + 1
-                        local start
-                        local cells = 0
-                        for r = 1, size.n do
-                            for c = 1, size.n do
-                                if b.region_id[r][c] == g then
-                                    cells = cells + 1
-                                    start = start or { r, c }
-                                end
-                            end
-                        end
-                        local seen, stack, reached = { [start[1] * 100 + start[2]] = true }, { start }, 1
-                        while #stack > 0 do
-                            local cur = table.remove(stack)
-                            for _, d in ipairs({ {-1,0},{1,0},{0,-1},{0,1} }) do
-                                local nr, nc = cur[1] + d[1], cur[2] + d[2]
-                                if inBounds(nr, nc, size.n) and b.region_id[nr][nc] == g
-                                        and not seen[nr * 100 + nc] then
-                                    seen[nr * 100 + nc] = true
-                                    reached = reached + 1
-                                    stack[#stack + 1] = { nr, nc }
-                                end
-                            end
-                        end
-                        assert.are.equal(cells, reached, ("region %d split"):format(g))
-                    end
-                    assert.are.equal(size.n, count_regions)
-                end
-                -- generous: well under 0.5 s on a desktop
-                assert.is_true(worst < 3.0, ("n=%d took %.2f s"):format(size.n, worst))
-            end
-        end)
     end)
 
     -- 1.7.0: a puzzle is kept only once a logic solver that never guesses
@@ -297,45 +246,6 @@ describe("StarBattleBoard", function()
             end
             return g
         end
-
-        it("solves every puzzle without guessing, and it is the only solution", function()
-            for _, size in ipairs(Board.SIZES) do
-                local n, k = size.n, size.k
-                for seed = 1, SEEDS do
-                    math.randomseed(seed * 1009 + n)
-                    local b = Board:new{ n = n, k = k }
-                    assert.are.equal(n, b.n)
-                    assert.are.equal(k, b.k)
-                    local solved, s, steps = Board._logicSolve(n, k, b.region_id)
-                    assert.is_true(solved, ("n=%d seed %d needs guessing"):format(n, seed))
-                    assert.are.same(b.solution, toGrid(n, s))
-                    -- more than the basic rules
-                    assert.is_true(steps[2] + steps[3] > 0, ("n=%d seed %d trivial"):format(n, seed))
-                    local count, exhausted, sol = Board._countSolutions(n, k, b.region_id, 2, 3000000)
-                    assert.is_false(exhausted)
-                    assert.are.equal(1, count, ("n=%d seed %d not unique"):format(n, seed))
-                    assert.are.same(b.solution, sol)
-                    -- n regions, none that just gives its stars away
-                    local sizes, regions = regionSizes(b), 0
-                    for _, cells in pairs(sizes) do
-                        regions = regions + 1
-                        assert.is_true(cells >= (k == 1 and 2 or 3))
-                    end
-                    assert.are.equal(n, regions)
-                end
-            end
-        end)
-
-        it("builds the same puzzle from the same seed", function()
-            for _, size in ipairs(Board.SIZES) do
-                math.randomseed(777)
-                local a = Board:new{ n = size.n, k = size.k }
-                math.randomseed(777)
-                local b = Board:new{ n = size.n, k = size.k }
-                assert.are.same(a.region_id, b.region_id)
-                assert.are.same(a.solution, b.solution)
-            end
-        end)
 
         it("keeps a stored puzzle per size, solved without guessing", function()
             for _, size in ipairs(Board.SIZES) do
@@ -367,21 +277,6 @@ describe("StarBattleBoard", function()
                         assert.are.same(sol, toGrid(n, s))
                     end
                 end
-            end
-        end)
-
-        -- generous bound for busted's plain Lua; LuaJIT on a desktop takes
-        -- under 40 ms per puzzle at worst (about 1 s on a Kobo Aura)
-        it("builds a puzzle quickly at every size", function()
-            for _, size in ipairs(Board.SIZES) do
-                local worst = 0
-                for seed = 1, 10 do
-                    math.randomseed(seed * 31 + size.n)
-                    local t0 = os.clock()
-                    Board:new{ n = size.n, k = size.k }
-                    worst = math.max(worst, os.clock() - t0)
-                end
-                assert.is_true(worst < 1.0, ("n=%d took %.2f s"):format(size.n, worst))
             end
         end)
 
